@@ -1,0 +1,120 @@
+services:
+  redis:
+    image: redis:7
+    container_name: euamoia-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./euamoia_redis:/data                            # host folder
+
+  frontend:
+    image: node:18
+    container_name: euamoia-front
+    working_dir: /app
+    volumes:
+      - ./euamoia_front:/app
+    environment:
+      - VITE_SUPABASE_URL=${SUPABASE_URL}
+      - VITE_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - redis
+
+  backend:
+    image: node:18
+    container_name: euamoia-back
+    working_dir: /app
+    volumes:
+      - ./euamoia_back:/app
+    command: sh -c "npm install && npm run start:dev"
+    ports:
+      - "3001:3001"        # porta definida no main.ts
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - REDIS_URL=redis://euamoia-redis:6379
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+    depends_on:
+      - redis
+
+  # ─────── Supabase full stack ───────
+  db:
+    image: supabase/postgres:15.1.0
+    container_name: supabase-db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: postgres
+      JWT_SECRET: ${JWT_SECRET}
+    volumes:
+      - supabase_db_data:/var/lib/postgresql/data
+
+  kong:
+    image: supabase/kong:0.5.4
+    depends_on: [db]
+    environment:
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+    ports:
+      - "8000:8000"
+
+  auth:
+    image: supabase/gotrue:v2.153.0
+    depends_on: [db, kong]
+    environment:
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_SITE_URL: ${SITE_URL:-http://localhost:3000}
+      GOTRUE_API_EXTERNAL_URL: http://kong:8000/auth/v1
+
+  rest:
+    image: supabase/postgrest:v11.2.2
+    depends_on: [db, kong]
+    environment:
+      PGRST_DB_URI: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+
+  realtime:
+    image: supabase/realtime:v2.30.0
+    depends_on: [db, kong]
+    environment:
+      DB_HOST: db
+      DB_NAME: postgres
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PORT: 4000
+    ports:
+      - "4000:4000"
+
+  storage:
+    image: supabase/storage-api:v0.40.3
+    depends_on: [db, kong]
+    environment:
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      POSTGREST_URL: http://rest:3000
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
+      FILE_SIZE_LIMIT: 52428800
+    volumes:
+      - supabase_storage_data:/var/lib/storage
+
+networks:
+  default:
+    name: euamoia-net 
+
+volumes:
+  supabase_db_data:
+  supabase_storage_data: 
