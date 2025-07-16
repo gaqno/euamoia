@@ -1,7 +1,8 @@
 [submodule "euamoia_front"]
 	path = euamoia_front
 	url = git@github.com:gaqno/euamoia_front.git
-	branch = master
+	branch = main
+
 [submodule "euamoia_back"]
 	path = euamoia_back
 	url = git@github.com:gaqno/euamoia_back.git
