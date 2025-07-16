@@ -5,4 +5,4 @@
 [submodule "euamoia_back"]
 	path = euamoia_back
 	url = git@github.com:gaqno/euamoia_back.git
-	branch = master
+	branch = main
