@@ -6,7 +6,25 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - ./euamoia_redis:/data                            # host folder
+      - ./euamoia_redis:/data
+
+  postgres:
+    image: postgres:16
+    container_name: euamoia-db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-euamoia}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   frontend:
     image: node:18
@@ -15,13 +33,13 @@ services:
     volumes:
       - ./euamoia_front:/app
     environment:
-      - VITE_SUPABASE_URL=${SUPABASE_URL}
-      - VITE_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - VITE_API_URL=http://localhost:3001
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     ports:
       - "3000:3000"
     depends_on:
       - redis
+      - backend
 
   backend:
     image: node:18
@@ -29,92 +47,70 @@ services:
     working_dir: /app
     volumes:
       - ./euamoia_back:/app
-    command: sh -c "npm install && npm run start:dev"
+    command: sh -c "npm install --legacy-peer-deps && npm run start:dev"
     ports:
-      - "3001:3001"        # porta definida no main.ts
+      - "3001:3001"
+      - "4983:4983"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - REDIS_URL=redis://euamoia-redis:6379
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-key}
+      - NODE_ENV=development
     depends_on:
-      - redis
+      redis:
+        condition: service_started
 
-  # ─────── Supabase full stack ───────
-  db:
-    image: public.ecr.aws/supabase/postgres:15.1.0.147
-    container_name: supabase-db
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: postgres
-      JWT_SECRET: ${JWT_SECRET}
+  drizzle-studio:
+    image: node:18
+    container_name: euamoia-drizzle-studio
+    working_dir: /app
     volumes:
-      - supabase_db_data:/var/lib/postgresql/data
-
-  kong:
-    image: public.ecr.aws/supabase/kong:2.8.1
-    depends_on: [db]
-    environment:
-      ANON_KEY: ${ANON_KEY}
-      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      JWT_SECRET: ${JWT_SECRET}
-    ports:
-      - "8000:8000"
-
-  auth:
-    image: public.ecr.aws/supabase/gotrue:v2.153.0
-    depends_on: [db, kong]
-    environment:
-      GOTRUE_DB_DRIVER: postgres
-      GOTRUE_DB_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
-      GOTRUE_JWT_SECRET: ${JWT_SECRET}
-      GOTRUE_SITE_URL: ${SITE_URL:-http://localhost:3000}
-      GOTRUE_API_EXTERNAL_URL: http://kong:8000/auth/v1
-
-  rest:
-    image: public.ecr.aws/supabase/postgrest:v11.2.2
-    depends_on: [db, kong]
-    environment:
-      PGRST_DB_URI: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
-      PGRST_DB_ANON_ROLE: anon
-      PGRST_JWT_SECRET: ${JWT_SECRET}
-
-  realtime:
-    image: public.ecr.aws/supabase/realtime:v2.30.0
-    depends_on: [db, kong]
-    environment:
-      DB_HOST: db
-      DB_NAME: postgres
-      DB_USER: postgres
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      PORT: 4000
+      - ./euamoia_back:/app
+    command: sh -c "npm install --legacy-peer-deps && npx drizzle-kit studio --host 0.0.0.0 --port 4000"
     ports:
       - "4000:4000"
-
-  storage:
-    image: public.ecr.aws/supabase/storage-api:v0.40.3
-    depends_on: [db, kong]
     environment:
-      ANON_KEY: ${ANON_KEY}
-      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      POSTGREST_URL: http://rest:3000
-      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
-      FILE_SIZE_LIMIT: 52428800
+      - DATABASE_URL=${DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Alternative: Local-only Drizzle Studio (if cloud version doesn't work)
+  drizzle-local:
+    image: node:18
+    container_name: euamoia-drizzle-local
+    working_dir: /app
     volumes:
-      - supabase_storage_data:/var/lib/storage
+      - ./euamoia_back:/app
+    command: sh -c "npm install --legacy-peer-deps && npx @drizzle-team/studio --port 4001 --host 0.0.0.0"
+    ports:
+      - "4001:4001"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - local-studio
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: euamoia-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_LISTEN_PORT: 5050
+    ports:
+      - "5050:5050"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 networks:
   default:
     name: euamoia-net 
 
 volumes:
-  supabase_db_data:
-  supabase_storage_data: 
+  postgres_data: 
